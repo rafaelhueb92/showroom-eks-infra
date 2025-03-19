@@ -1,0 +1,189 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  ACTIONS_STEP_DEBUG: true
+  AWS_DEBUG: true
+  AWS_REGION: us-east-1
+
+jobs:
+
+  check-destroy:
+    runs-on: ubuntu-latest
+    outputs:
+      destroy_triggered: ${{ steps.check_destroy.outputs.destroy_triggered }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set environment variables
+        run: |
+          echo "REPO_NAME=${{ github.repository }}" >> $GITHUB_ENV
+          echo "ROLE_NAME=GitHubActionsRole" >> $GITHUB_ENV
+          echo "ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}" >> $GITHUB_ENV
+
+      - name: Concatenate environment variables to create IAM Role ARN
+        run: |
+          ARN="arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME-${REPO_NAME#*/}"
+          echo "TF_VAR_ROLE_ARN=$ARN" >> $GITHUB_ENV
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TF_VAR_ROLE_ARN }}
+          aws-region: us-east-1 
+      
+      - name: Clear AWS Credentials Cache
+        run: rm -rf ~/.aws/cli/cache
+      
+      - name: Configure state.tf file
+        run: bash backend-create.sh
+        working-directory: ./terraform
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: 1.4.0
+          terraform_wrapper: false
+
+      - name: Read destroy.yaml and check if destroy=true
+        id: check_destroy
+        run: |
+          DESTROY=$(grep 'destroy:' destroy.yaml | awk '{print $2}')
+          if [[ "$DESTROY" == "true" ]]; then
+            echo "Destroy triggered"
+            echo "destroy_triggered=true" >> $GITHUB_ENV
+            echo "destroy_triggered=true" >> $GITHUB_OUTPUT
+          else
+            echo "destroy_triggered=false" >> $GITHUB_ENV
+            echo "destroy_triggered=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Initialize Terraform
+        run: terraform init
+        working-directory: ./terraform  # Specify the directory where your Terraform files are located
+
+      - name: Run Terraform Destroy
+        if: env.destroy_triggered == 'true'
+        run: |
+          echo "Destroying infrastructure..."
+          terraform destroy -auto-approve
+          echo "Stopping pipeline after destroy..."
+          exit 0  
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: check-destroy  
+    if: needs.check-destroy.outputs.destroy_triggered != 'true' 
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set environment variables
+        run: |
+          echo "REPO_NAME=${{ github.repository }}" >> $GITHUB_ENV
+          echo "ROLE_NAME=GitHubActionsRole" >> $GITHUB_ENV
+          echo "ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}" >> $GITHUB_ENV
+
+      - name: Concatenate environment variables to create IAM Role ARN
+        run: |
+          ARN="arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME-${REPO_NAME#*/}"
+          echo "TF_VAR_ROLE_ARN=$ARN" >> $GITHUB_ENV
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.TF_VAR_ROLE_ARN }}
+          aws-region: us-east-1 
+      
+      - name: Clear AWS Credentials Cache
+        run: rm -rf ~/.aws/cli/cache
+      
+      - name: Configure backend.hcl file
+        run: bash backend-create.sh
+        working-directory: ./terraform
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: 1.4.0
+          terraform_wrapper: false
+      
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: ./terraform
+
+      - name: Retrieve EKS Cluster Name from Terraform
+        run: |
+          CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+          echo "EKS_CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+        working-directory: ./terraform
+
+      - name: Create EKS Access Entry for GitHub Actions
+        run: |
+          aws eks create-access-entry \
+            --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
+            --principal-arn ${{ env.TF_VAR_ROLE_ARN }} \
+            --region $AWS_REGION
+
+      - name: Admin Access Entry
+        run: |  
+            aws eks create-access-entry \
+                --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
+                --principal-arn arn:aws:iam::$ACCOUNT_ID:user/${{ secrets.EKS_ADMIN }} \
+                --region $AWS_REGION
+
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region $AWS_REGION
+
+      - name: Add Helm repositories
+        uses: WyriHaximus/github-action-helm3@v3
+        with:
+          exec: | 
+            helm repo add bitnami https://charts.bitnami.com/bitnami
+            helm repo update
+
+      - name: Install Kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+         version: 'latest' 
+      
+      - name: Check Kubectl
+        run: |
+            kubectl get ns 
+
+      - name: Install ArgoCD using Helm and Run Helm test
+        uses: WyriHaximus/github-action-helm3@v3
+        with:
+          exec: | 
+            helm upgrade --install argocd bitnami/argo-cd --namespace argocd --create-namespace
+            helm test argocd --namespace argocd
+
+      - name: Terraform Destroy if Apply fails
+        if: failure()  
+        run: |
+          echo "Applying failed. Running terraform destroy..."
+          terraform destroy -auto-approve
+          exit 0
+        working-directory: ./terraform
