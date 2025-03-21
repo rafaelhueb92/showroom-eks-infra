@@ -17,6 +17,11 @@ data "aws_iam_policy_document" "eks" {
     actions   = ["iam:*"]
     resources = ["*"]
   }
+  statement { 
+    effect = "Allow"
+    actions = ["s3:*"]
+    resources = ["*"]  
+  }
 
 }
 
