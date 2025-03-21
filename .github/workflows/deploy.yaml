@@ -134,52 +134,6 @@ jobs:
         run: terraform apply -auto-approve tfplan
         working-directory: ./terraform
 
-      - name: Retrieve EKS Cluster Name from Terraform
-        run: |
-          CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
-          echo "EKS_CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
-        working-directory: ./terraform
-
-      - name: Create EKS Access Entry for GitHub Actions
-        run: |
-          aws eks create-access-entry \
-            --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
-            --principal-arn ${{ env.TF_VAR_ROLE_ARN }} \
-            --region $AWS_REGION
-
-      - name: Admin Access Entry
-        run: |  
-            aws eks create-access-entry \
-                --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
-                --principal-arn arn:aws:iam::$ACCOUNT_ID:user/${{ secrets.EKS_ADMIN }} \
-                --region $AWS_REGION
-
-      - name: Update kube config
-        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region $AWS_REGION
-
-      - name: Add Helm repositories
-        uses: WyriHaximus/github-action-helm3@v3
-        with:
-          exec: | 
-            helm repo add bitnami https://charts.bitnami.com/bitnami
-            helm repo update
-
-      - name: Install Kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-         version: 'latest' 
-      
-      - name: Check Kubectl
-        run: |
-            kubectl get ns 
-
-      - name: Install ArgoCD using Helm and Run Helm test
-        uses: WyriHaximus/github-action-helm3@v3
-        with:
-          exec: | 
-            helm upgrade --install argocd bitnami/argo-cd --namespace argocd --create-namespace
-            helm test argocd --namespace argocd
-
       - name: Terraform Destroy if Apply fails
         if: failure()  
         run: |

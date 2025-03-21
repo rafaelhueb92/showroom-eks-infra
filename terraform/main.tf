@@ -23,3 +23,14 @@ module "iam" {
 module "dynamodb" {
   source = "./dynamodb"
 }
+
+module secrets { 
+  source = "./secrets"
+  secret_string = module.iam.iam_user_eks_admin_jsonencoded
+  iam_user_name = module.iam.iam_user_eks_name
+
+  depends_on = [
+    module.iam
+  ]
+
+}
