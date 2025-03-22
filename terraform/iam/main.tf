@@ -22,7 +22,16 @@ data "aws_iam_policy_document" "eks" {
     actions = ["s3:*"]
     resources = ["*"]  
   }
-
+  statement {
+    effect = "Allow"
+    actions = ["ec2:*"]
+    resources = ["*"]
+  }
+  statement {
+    effect = "Allow"
+    actions = ["ssm:*"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_user_policy" "this" {
