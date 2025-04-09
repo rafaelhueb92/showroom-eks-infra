@@ -59,7 +59,7 @@ jobs:
       - name: Read destroy.yaml and check if destroy=true
         id: check_destroy
         run: |
-          DESTROY=$(grep 'destroy:' destroy.yaml | awk '{print $2}')
+          DESTROY=$(grep 'destroy:' ./terraform/destroy.yaml | awk '{print $2}')
           if [[ "$DESTROY" == "true" ]]; then
             echo "Destroy triggered"
             echo "destroy_triggered=true" >> $GITHUB_ENV
