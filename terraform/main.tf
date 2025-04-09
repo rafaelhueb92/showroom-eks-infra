@@ -28,14 +28,3 @@ module "parameter_vpc" {
   name_parameter = "/vpc/${var.project_name}/id"
   value_parameter = module.vpc.vpc_id
 }
-
-module secrets { 
-  source = "./secrets"
-  secret_string = module.iam.iam_user_eks_admin_jsonencoded
-  iam_user_name = module.iam.iam_user_eks_name
-
-  depends_on = [
-    module.iam
-  ]
-
-}
